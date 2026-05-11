@@ -14,6 +14,19 @@ if os.path.exists(_last_db_file):
 else:
     DB_PATH = "database/sample.db"
 
+# Database type: "sqlite" | "postgres" | "postgresql" | "mysql" | "mariadb"
+# Set via environment variable DB_TYPE or /connect_db API endpoint.
+DB_TYPE = os.getenv("DB_TYPE", "sqlite")
+
+# Connection string for Postgres / MySQL (ignored for SQLite)
+# Examples:
+#   postgresql://user:pass@localhost:5432/mydb
+#   mysql://user:pass@localhost:3306/mydb
+DB_DSN = os.getenv("DB_DSN", "")
+
+# Postgres schema to introspect (default: public)
+DB_SCHEMA = os.getenv("DB_SCHEMA", "public")
+
 # ─────────────────────────────────────────────
 # MODEL CONFIGURATION
 # ─────────────────────────────────────────────

@@ -19,7 +19,10 @@ sqlparse
 datasets
 
 # Database drivers
-# psycopg2-binary  # Uncomment if you add PostgreSQL support later
+# SQLite is built into Python — no extra driver needed.
+# Install the driver for the database type(s) you want to use:
+psycopg2-binary        # PostgreSQL support
+mysql-connector-python # MySQL / MariaDB support
 
 # APIs & Environment
 python-dotenv

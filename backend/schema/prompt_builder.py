@@ -32,11 +32,31 @@ def _serialise_schema_spider(schema: Dict[str, Any], db_id: str = "database") ->
         table1 : col1 col2 col3 | table2 : col4 col5
 
     Column names are lower-cased to match training data conventions.
+    String/text columns with sample values are annotated inline so the
+    model can ground string literals (e.g., use 'Mathematics' not 'Math'):
+
+        table1 : col1 , col2 [val1, val2] , col3 | ...
     """
+    # Column types that may contain meaningful string literals
+    _TEXT_TYPES = {"text", "varchar", "char", "string", "nvarchar", "clob"}
+
     parts: List[str] = []
     for table_name, table_info in schema.items():
-        col_names = " , ".join(col["name"].lower() for col in table_info["columns"])
-        parts.append(f"{table_name.lower()} : {col_names}")
+        col_parts: List[str] = []
+        for col in table_info["columns"]:
+            col_name = col["name"].lower()
+            col_type = col.get("type", "").lower().split("(")[0].strip()
+            samples = table_info.get("sample_values", {}).get(col["name"], [])
+
+            # Annotate text columns with up to 3 sample values so the model
+            # knows exactly which string literals exist in the data.
+            if col_type in _TEXT_TYPES and samples:
+                sample_str = ", ".join(f"'{s}'" for s in samples[:3])
+                col_parts.append(f"{col_name} [{sample_str}]")
+            else:
+                col_parts.append(col_name)
+
+        parts.append(f"{table_name.lower()} : {' , '.join(col_parts)}")
     return " | ".join(parts)
 
 
