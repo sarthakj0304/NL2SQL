@@ -7,7 +7,7 @@ Endpoints
 ─────────
   POST /api/query     — Translate NL question → SQL → execute → return results
   GET  /api/schema    — Return the schema of the configured database
-  GET  /api/health    — Model + database health check
+  
 
 Configuration
 ─────────────
@@ -37,10 +37,7 @@ from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
-if os.getenv("GEMINI_API_KEY"):
-    gemini_client = genai.Client()
-else:
-    gemini_client = None
+
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -61,7 +58,10 @@ from sql.sql_repair         import repair_sql
 from sql.sql_executor       import run_sql
 
 from utils.response_formatter import format_success, format_error
-
+if os.getenv("GEMINI_API_KEY"):
+    gemini_client = genai.Client()
+else:
+    gemini_client = None
 import config.settings
 from config.settings import DEFAULT_ERROR_MESSAGE
 
@@ -121,26 +121,26 @@ def upload_db():
 # Health check
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.route("/api/health", methods=["GET"])
-def health():
-    """Return the status of the model and database connection."""
-    db_ok = False
-    db_tables = 0
-    try:
-        schema = load_schema(config.settings.DB_PATH)
-        db_ok = True
-        db_tables = len(schema)
-    except Exception as e:
-        log.warning("DB health check failed: %s", e)
+# @app.route("/api/health", methods=["GET"])
+# def health():
+#     """Return the status of the model and database connection."""
+#     db_ok = False
+#     db_tables = 0
+#     try:
+#         schema = load_schema(config.settings.DB_PATH)
+#         db_ok = True
+#         db_tables = len(schema)
+#     except Exception as e:
+#         log.warning("DB health check failed: %s", e)
 
-    return jsonify({
-        "status":       "ok" if db_ok else "degraded",
-        "model_loaded": model_is_available(),
-        "model_name":   get_active_model_name(),
-        "db_path":      config.settings.DB_PATH,
-        "db_reachable": db_ok,
-        "db_tables":    db_tables,
-    })
+#     return jsonify({
+#         "status":       "ok" if db_ok else "degraded",
+#         "model_loaded": model_is_available(),
+#         "model_name":   get_active_model_name(),
+#         "db_path":      config.settings.DB_PATH,
+#         "db_reachable": db_ok,
+#         "db_tables":    db_tables,
+#     })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -247,7 +247,7 @@ def query():
             try:
                 columns, rows = run_sql(sql, config.settings.DB_PATH)
                 print("\n" + "="*50)
-                print("⚡ OUTPUT SOURCE: RULE ENGINE")
+                # print("⚡ OUTPUT SOURCE: RULE ENGINE")
                 print("="*50 + "\n")
                 log.info("[Rule engine] Success — %d rows", len(rows))
                 return jsonify(format_success(
@@ -285,12 +285,12 @@ def query():
     # 2d. Model inference
     raw_output, confidence_score = generate_sql(prompt)
     print("\n" + "="*50)
-    print("🤖 OUTPUT SOURCE: MACHINE LEARNING (T5 MODEL)")
+    # print("🤖 OUTPUT SOURCE: MACHINE LEARNING (T5 MODEL)")
     print("="*50 + "\n")
     log.info("[Model] Raw output: %s, confidence: %s", raw_output, confidence_score)
 
     if not raw_output or confidence_score < -0.83:
-        log.warning("[Model] T5 failed or low confidence. Falling back to Gemini.")
+        # log.warning("[Model] T5 failed or low confidence. Falling back to Gemini.")
         try:
             if gemini_client:
                 gemini_prompt = f"Given this database schema:\n{linked_schema}\nGenerate ONLY a SQL query for this question: '{question}'. Do not include markdown code blocks, just the raw SQL. If the question asks to manipulate or modify data (e.g., DROP, INSERT, UPDATE, DELETE), generate the exact SQL query requested so it can be correctly processed by our system."
@@ -300,7 +300,7 @@ def query():
                 )
                 raw_output = response.text.replace("```sql", "").replace("```", "").strip()
                 print("\n" + "="*50)
-                print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for generation)")
+                # print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for generation)")
                 print("="*50 + "\n")
                 log.info("[Gemini] Generated SQL: %s", raw_output)
             else:
@@ -364,7 +364,7 @@ def query():
                 log.error("[Repair+Executor] Also failed: %s", repair_error)
 
         # Gemini fallback for execution failure
-        log.warning("[Model] T5 SQL execution failed. Falling back to Gemini.")
+        # log.warning("[Model] T5 SQL execution failed. Falling back to Gemini.")
         try:
             if gemini_client:
                 gemini_prompt = f"Given this database schema:\n{linked_schema}\nThe user asked: '{question}'. The following SQL failed to execute: {sql}. Error: {exec_error}. Generate a corrected, valid SQL query. Return ONLY the raw SQL, no markdown."
@@ -374,7 +374,7 @@ def query():
                 )
                 gemini_sql = clean_sql(response.text.replace("```sql", "").replace("```", "").strip())
                 print("\n" + "="*50)
-                print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for execution repair)")
+                # print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for execution repair)")
                 print("="*50 + "\n")
                 log.info("[Gemini Repair] Generated SQL: %s", gemini_sql)
 
