@@ -58,11 +58,11 @@ def clean_sql(raw_output: str) -> Optional[str]:
     sql = re.sub(r"```(?:sql)?\s*", "", sql, flags=re.IGNORECASE)
     sql = sql.replace("```", "")
 
-    # 2. If the output contains "SELECT", extract from there forward
+    # 2. If the output contains a SQL keyword, extract from there forward
     #    (model sometimes prepends explanation text)
-    select_match = re.search(r"\bSELECT\b", sql, re.IGNORECASE)
-    if select_match:
-        sql = sql[select_match.start():]
+    first_kw_match = re.search(r"\b(SELECT|WITH|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE)\b", sql, re.IGNORECASE)
+    if first_kw_match:
+        sql = sql[first_kw_match.start():]
 
     # 3. Truncate at the first double-newline or "---" separator
     #    (some models append reasoning after a blank line)
@@ -80,7 +80,7 @@ def clean_sql(raw_output: str) -> Optional[str]:
     sql = _KEYWORD_RE.sub(lambda m: m.group(0).upper(), sql)
 
     # 7. Reject if the result doesn't look like SQL
-    if not re.search(r"\bSELECT\b", sql, re.IGNORECASE):
+    if not re.search(r"\b(SELECT|WITH|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE)\b", sql, re.IGNORECASE):
         return None
 
     return sql
