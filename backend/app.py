@@ -337,7 +337,7 @@ def query():
             try:
                 columns, rows = run_sql(sql, config.settings.DB_PATH)
                 print("\n" + "="*50)
-                print("⚡ OUTPUT SOURCE: RULE ENGINE")
+                # print("⚡ OUTPUT SOURCE: RULE ENGINE")
                 print("="*50 + "\n")
                 log.info("[Rule engine] Success — %d rows", len(rows))
                 return jsonify(format_success(
@@ -375,12 +375,12 @@ def query():
     # 2d. Model inference
     raw_output, confidence_score = generate_sql(prompt)
     print("\n" + "="*50)
-    print("🤖 OUTPUT SOURCE: MACHINE LEARNING (T5 MODEL)")
+    # print("🤖 OUTPUT SOURCE: MACHINE LEARNING (T5 MODEL)")
     print("="*50 + "\n")
     log.info("[Model] Raw output: %s, confidence: %s", raw_output, confidence_score)
 
     if not raw_output or confidence_score < -0.83:
-        log.warning("[Model] T5 failed or low confidence. Falling back to Gemini.")
+        # log.warning("[Model] T5 failed or low confidence. Falling back to Gemini.")
         try:
             if gemini_client:
                 gemini_schema_str = build_debug_prompt(question, linked_schema, hints=hints)
@@ -391,7 +391,7 @@ def query():
                 )
                 raw_output = response.text.replace("```sql", "").replace("```", "").strip()
                 print("\n" + "="*50)
-                print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for generation)")
+                # print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for generation)")
                 print("="*50 + "\n")
                 log.info("[Gemini] Generated SQL: %s", raw_output)
             else:
@@ -463,7 +463,7 @@ def query():
                 log.error("[Repair+Executor] Also failed: %s", repair_error)
 
         # Gemini fallback for execution failure
-        log.warning("[Model] T5 SQL execution failed. Falling back to Gemini.")
+        # log.warning("[Model] T5 SQL execution failed. Falling back to Gemini.")
         try:
             if gemini_client:
                 gemini_schema_str = build_debug_prompt(question, linked_schema, hints=hints)
@@ -474,9 +474,9 @@ def query():
                 )
                 gemini_sql = clean_sql(response.text.replace("```sql", "").replace("```", "").strip())
                 print("\n" + "="*50)
-                print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for execution repair)")
+                # print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for execution repair)")
                 print("="*50 + "\n")
-                log.info("[Gemini Repair] Generated SQL: %s", gemini_sql)
+                # log.info("[Gemini Repair] Generated SQL: %s", gemini_sql)
 
                 if not is_safe_sql(gemini_sql):
                     log.warning("[Validator] Rejected unsafe Gemini repair SQL: %s", gemini_sql)
