@@ -95,11 +95,13 @@ def repair_sql(sql: str, schema: Dict[str, Any]) -> str:
     Steps:
       1. Fix wrong table names (fuzzy match to real table names)
       2. Fix wrong column names (fuzzy match to columns of matched table)
+      3. Fix wrong string literal values in WHERE/HAVING (fuzzy match
+         against sample_values) — e.g. 'Math' → 'Mathematics'
 
     Parameters
     ----------
     sql : str
-        The SQL string to repair (may have wrong identifiers).
+        The SQL string to repair (may have wrong identifiers or values).
     schema : dict
         Full or pruned schema dict from schema_loader.
 
@@ -158,4 +160,55 @@ def repair_sql(sql: str, schema: Dict[str, Any]) -> str:
                 rf"\b{re.escape(wrong_col)}\b", correct_col, repaired, flags=re.IGNORECASE
             )
 
+    # ── Step 3: Fix wrong string literal values ───────────────────────────
+    # e.g. WHERE major = 'Math'  →  WHERE major = 'Mathematics'
+    repaired = _repair_string_literals(repaired, schema, resolved_tables)
+
     return repaired
+
+
+def _repair_string_literals(sql: str, schema: Dict[str, Any], resolved_tables: List[str]) -> str:
+    """
+    Scan all single-quoted string literals in the SQL and replace any that
+    fuzzy-match a real sample value better than the literal itself.
+
+    Only string/text typed columns are considered to avoid touching
+    numeric or date literals.
+    """
+    _TEXT_TYPES = {"text", "varchar", "char", "string", "nvarchar", "clob"}
+
+    # Collect all sample values from text-type columns in the resolved tables
+    all_samples: List[str] = []
+    for tname in resolved_tables:
+        if tname not in schema:
+            continue
+        tinfo = schema[tname]
+        for col in tinfo["columns"]:
+            col_type = col.get("type", "").lower().split("(")[0].strip()
+            if col_type in _TEXT_TYPES:
+                col_samples = tinfo.get("sample_values", {}).get(col["name"], [])
+                all_samples.extend(col_samples)
+
+    if not all_samples:
+        return sql
+
+    # Find every single-quoted literal in the SQL (e.g., 'Math', 'CS')
+    literal_pattern = re.compile(r"'([^']*)'")
+
+    def replace_literal(match: re.Match) -> str:
+        literal_value = match.group(1)
+        if not literal_value:
+            return match.group(0)
+
+        # If the literal already exactly matches a sample value, keep it
+        if literal_value in all_samples:
+            return match.group(0)
+
+        # Fuzzy match: find the closest real sample value
+        best = _best_match(literal_value, all_samples, threshold=60)
+        if best and best != literal_value:
+            return f"'{best}'"
+
+        return match.group(0)
+
+    return literal_pattern.sub(replace_literal, sql)

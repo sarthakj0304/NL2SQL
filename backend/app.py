@@ -43,7 +43,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
-from schema.schema_loader   import load_schema
+from schema.schema_loader   import load_schema, invalidate_cache
 from schema.schema_linker   import link_schema
 from schema.prompt_builder  import build_prompt, build_debug_prompt
 
@@ -56,6 +56,9 @@ from sql.sql_validator      import is_safe_sql, is_safe_prompt
 from sql.sql_verifier       import verify_sql
 from sql.sql_repair         import repair_sql
 from sql.sql_executor       import run_sql
+
+from database.connector_factory import get_connector
+from database.db_connector      import set_connector, get_active_db_type
 
 from utils.response_formatter import format_success, format_error
 if os.getenv("GEMINI_API_KEY"):
@@ -89,6 +92,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 @app.route("/upload_db", methods=["POST"])
 def upload_db():
+    """Upload a SQLite .db / .sqlite file and connect to it."""
     if "file" not in request.files:
         return jsonify({"error": "No file part"}), 400
     file = request.files["file"]
@@ -102,20 +106,106 @@ def upload_db():
     file.save(file_path)
 
     config.settings.DB_PATH = file_path
+    config.settings.DB_TYPE = "sqlite"
     with open(os.path.join(UPLOAD_FOLDER, "last_db.txt"), "w") as f:
         f.write(file_path)
 
     try:
+        connector = get_connector("sqlite", db_path=file_path)
+        set_connector(connector)
+        invalidate_cache()  # Flush schema cache so fresh schema is loaded
         schema = load_schema(file_path)
         return jsonify({
             "success": True,
             "message": f"Database connected successfully! I've indexed {len(schema)} tables.",
             "db_name": file.filename,
+            "db_type": "sqlite",
             "tables": len(schema)
         })
     except Exception as e:
         log.error("Failed to load schema from uploaded DB: %s", e)
         return jsonify({"error": "Invalid database file"}), 400
+
+
+@app.route("/connect_db", methods=["POST"])
+def connect_db():
+    """
+    Connect to a PostgreSQL or MySQL database via DSN.
+
+    Request body (JSON)
+    -------------------
+    {
+      "db_type": "postgres",
+      "dsn":     "postgresql://user:pass@host:5432/mydb",
+      "schema":  "public"   // optional, Postgres only
+    }
+    OR for MySQL:
+    {
+      "db_type": "mysql",
+      "dsn":     "mysql://user:pass@localhost:3306/mydb"
+    }
+    OR with explicit fields:
+    {
+      "db_type":  "mysql",
+      "host":     "localhost",
+      "port":     3306,
+      "user":     "root",
+      "password": "secret",
+      "database": "mydb"
+    }
+
+    Response (success)
+    ------------------
+    { "success": true, "db_type": "postgres", "tables": 12,
+      "message": "Connected to PostgreSQL — 12 tables indexed." }
+    """
+    data    = request.get_json(silent=True) or {}
+    db_type = (data.get("db_type") or "").strip().lower()
+
+    if not db_type:
+        return jsonify({"error": "'db_type' is required (postgres/mysql)."}), 400
+
+    if db_type == "sqlite":
+        return jsonify({"error": "Use /upload_db to upload a SQLite file."}), 400
+
+    # Build kwargs for the factory
+    factory_kwargs: dict = {}
+    dsn = (data.get("dsn") or "").strip()
+    if dsn:
+        factory_kwargs["dsn"] = dsn
+    for field in ("host", "port", "user", "password", "database"):
+        if data.get(field):
+            factory_kwargs[field] = data[field]
+    if db_type in ("postgres", "postgresql") and data.get("schema"):
+        factory_kwargs["schema"] = data["schema"]
+
+    try:
+        connector = get_connector(db_type, **factory_kwargs)
+    except (ValueError, ImportError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Test connectivity before committing
+    if not connector.test_connection():
+        return jsonify({"error": "Could not connect to the database. Check credentials and host."}), 400
+
+    # Register as active connector
+    set_connector(connector)
+    config.settings.DB_TYPE = db_type
+    config.settings.DB_DSN  = dsn
+    invalidate_cache()  # Flush old schema cache
+
+    try:
+        schema = connector.extract_schema()
+        log.info("[connect_db] Connected to %s — %d tables.", db_type, len(schema))
+        return jsonify({
+            "success": True,
+            "db_type": db_type,
+            "tables":  len(schema),
+            "message": f"Connected to {db_type.capitalize()} — {len(schema)} tables indexed.",
+        })
+    except Exception as e:
+        log.error("[connect_db] Schema extraction failed: %s", e)
+        return jsonify({"error": f"Connected but schema extraction failed: {e}"}), 500
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Health check
@@ -293,7 +383,8 @@ def query():
         # log.warning("[Model] T5 failed or low confidence. Falling back to Gemini.")
         try:
             if gemini_client:
-                gemini_prompt = f"Given this database schema:\n{linked_schema}\nGenerate ONLY a SQL query for this question: '{question}'. Do not include markdown code blocks, just the raw SQL. If the question asks to manipulate or modify data (e.g., DROP, INSERT, UPDATE, DELETE), generate the exact SQL query requested so it can be correctly processed by our system."
+                gemini_schema_str = build_debug_prompt(question, linked_schema, hints=hints)
+                gemini_prompt = f"{gemini_schema_str}\n\nIMPORTANT: Generate ONLY a valid SQL SELECT query for the question above. Use the exact string values shown in the sample comments. Return only raw SQL — no markdown, no explanations."
                 response = gemini_client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=gemini_prompt
@@ -340,6 +431,14 @@ def query():
                 question, DEFAULT_ERROR_MESSAGE, sql=sql, stage="verification"
             )), 422
 
+    # 2g-2. Proactive string literal repair (runs always, before execution)
+    # Fixes cases like WHERE major = 'Math' → 'Mathematics' even when the
+    # SQL is structurally valid but uses abbreviated/hallucinated values.
+    sql_repaired = repair_sql(sql, full_schema)
+    if sql_repaired != sql:
+        log.info("[Repair] Proactive value repair: %s → %s", sql, sql_repaired)
+        sql = sql_repaired
+
     # 2h. Execute
     try:
         columns, rows = run_sql(sql, config.settings.DB_PATH)
@@ -367,7 +466,8 @@ def query():
         # log.warning("[Model] T5 SQL execution failed. Falling back to Gemini.")
         try:
             if gemini_client:
-                gemini_prompt = f"Given this database schema:\n{linked_schema}\nThe user asked: '{question}'. The following SQL failed to execute: {sql}. Error: {exec_error}. Generate a corrected, valid SQL query. Return ONLY the raw SQL, no markdown."
+                gemini_schema_str = build_debug_prompt(question, linked_schema, hints=hints)
+                gemini_prompt = f"{gemini_schema_str}\n\nThe following SQL failed: {sql}\nError: {exec_error}\n\nGenerate a corrected, valid SQL query using the exact string values shown in the sample comments above. Return ONLY the raw SQL, no markdown."
                 response = gemini_client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=gemini_prompt
@@ -376,7 +476,7 @@ def query():
                 print("\n" + "="*50)
                 # print("🧠 OUTPUT SOURCE: GEMINI API (Fallback for execution repair)")
                 print("="*50 + "\n")
-                log.info("[Gemini Repair] Generated SQL: %s", gemini_sql)
+                # log.info("[Gemini Repair] Generated SQL: %s", gemini_sql)
 
                 if not is_safe_sql(gemini_sql):
                     log.warning("[Validator] Rejected unsafe Gemini repair SQL: %s", gemini_sql)
@@ -392,11 +492,11 @@ def query():
             else:
                 raise Exception("GEMINI_API_KEY is not set.")
         except Exception as e2:
-            log.error("[Gemini Repair] Failed: %s", e2)
-
-        return jsonify(format_error(
-            question, DEFAULT_ERROR_MESSAGE, sql=sql, stage="execution"
-        )), 422
+            import traceback
+            log.error("[Gemini Repair] Failed: %s\n%s", e2, traceback.format_exc())
+            return jsonify(format_error(
+                question, f"Gemini Repair Failed: {str(e2)}\nTraceback: {traceback.format_exc()}", sql=sql, stage="execution"
+            )), 422
 
 
 # ─────────────────────────────────────────────────────────────────────────────
